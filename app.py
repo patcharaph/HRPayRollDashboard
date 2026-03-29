@@ -293,7 +293,7 @@ def is_valid_cost_center(series: pd.Series) -> pd.Series:
 def build_thai_header_table(df: pd.DataFrame) -> pd.DataFrame:
     col_map = {
         "month_key": "เดือน",
-        "cost_center": "รหัสศูนย์ต้นทุน",
+        "cost_center": "Cost Center",
         "department": "แผนก",
         "direct_payroll_cost": "เงินเดือน",
         "employee_count": "จำนวนพนักงาน",
@@ -333,46 +333,63 @@ def _norm_item_name(name: str) -> str:
 
 
 def order_pay_item_columns(pay_item_cols: list[str]) -> list[str]:
-    preferred_order = [
-        "salary",
-        "เงินเดือน",
-        "bonus",
-        "โบนัส",
-        "ชดเชย+บอกกล่าว",
-        "วันหยุดคงเหลือ",
-        "ot",
-        "เบิก/ปรับย้าล่วงเวลา",
-        "allowance",
-        "เงินช่วยเหลือ",
-        "tel",
-        "ค่าโทรศัพท์",
-        "car allowance",
-        "car",
-        "ค่าครองชีพ",
-        "ประกันกลุ่ม flex point (tax)",
-        "ค่าตำแหน่ง",
-        "ค่าพาหนะ",
-        "soc.",
-        "soc",
-        "ประกันสังคมลูกจ้าง",
-        "ประกันสังคมนายจ้าง",
-        "pf พนง.",
-        "สะสมกองทุนพนักงาน",
-        "pf บริษัท",
-        "สมทบกองทุนบริษัท",
-        "esp",
-        "กยศ",
-        "บังคับคดี",
-        "accrued bonus",
+    # Fixed business order requested by user.
+    # Each row allows Thai/English aliases found in source files.
+    order_alias_groups = [
+        ["เงินเดือน", "salary"],
+        ["โบนัส", "bonus"],
+        ["ชดเชย+บอกกล่าว"],
+        ["วันหยุดคงเหลือ"],
+        ["ตกเบิก/ปรับย้อน", "ตกเบิก", "ปรับย้อน", "incentive", "adjust"],
+        ["ค่าล่วงเวลา", "ot"],
+        ["เงินช่วยเหลือ", "allowance", "all"],
+        ["ค่าโทรศัพท์", "tel"],
+        ["ค่าครองชีพ"],
+        ["ประกันกลุ่ม flex point (tax)", "flex point"],
+        ["ค่าตำแหน่ง"],
+        ["ค่าพาหนะ", "car allowance", "car"],
+        ["ประกันสังคมลูกจ้าง", "soc.", "soc"],
+        ["ประกันสังคมนายจ้าง"],
+        ["เงินสะสมกองทุนพนักงาน", "pf พนง.", "pf พนง"],
+        ["เงินสมทบกองทุนบริษัท", "pf บริษัท"],
+        ["esp"],
+        ["กยศ"],
+        ["บังคับคดี"],
     ]
-    by_norm = {_norm_item_name(c.replace("pay_total_", "")): c for c in pay_item_cols}
+
+    base_cols = {c: _norm_item_name(c.replace("pay_total_", "")) for c in pay_item_cols}
     ordered = []
-    for item in preferred_order:
-        key = _norm_item_name(item)
-        if key in by_norm and by_norm[key] not in ordered:
-            ordered.append(by_norm[key])
-    # Append any remaining columns that are not in preferred order.
+    used = set()
+
+    for aliases in order_alias_groups:
+        alias_norms = [_norm_item_name(a) for a in aliases]
+        for col, base_norm in base_cols.items():
+            if col in used:
+                continue
+            if any((a in base_norm) or (base_norm in a) for a in alias_norms):
+                ordered.append(col)
+                used.add(col)
+
+    # Append remaining pay items at the end, keeping original appearance order.
     for c in pay_item_cols:
+        if c not in used:
+            ordered.append(c)
+    return ordered
+
+
+def order_employee_item_columns(employee_item_cols: list[str]) -> list[str]:
+    """
+    Order employee pay-item columns using the same business order as cost-center summary.
+    Input format: 'รายการค่าใช้จ่าย: <item>'
+    """
+    to_pay_total = {
+        c: f"pay_total_{str(c).replace('รายการค่าใช้จ่าย: ', '').strip()}"
+        for c in employee_item_cols
+    }
+    ordered_pay_total = order_pay_item_columns(list(to_pay_total.values()))
+    back_map = {v: k for k, v in to_pay_total.items()}
+    ordered = [back_map[c] for c in ordered_pay_total if c in back_map]
+    for c in employee_item_cols:
         if c not in ordered:
             ordered.append(c)
     return ordered
@@ -1031,7 +1048,7 @@ with tab2:
                 "employee_id": "รหัสพนักงาน",
                 "employee_name": "ชื่อพนักงาน",
                 "department": "แผนก",
-                "cost_center": "รหัสศูนย์ต้นทุน",
+                "cost_center": "Cost Center",
                 "direct_payroll_cost": "เงินเดือน",
             }
         )
@@ -1050,8 +1067,7 @@ with tab2:
             "รหัสพนักงาน",
             "ชื่อพนักงาน",
             "แผนก",
-            "รหัสศูนย์ต้นทุน",
-            "เงินเดือน",
+            "Cost Center",
         ]
         fixed_cols_existing = [c for c in fixed_cols if c in employee_display.columns]
         pay_item_cols_tab2 = [
@@ -1059,14 +1075,18 @@ with tab2:
             for c in employee_payitem_f.columns
             if c not in ["month_key", "employee_id"]
         ]
+        pay_item_cols_tab2 = order_employee_item_columns(pay_item_cols_tab2)
         for c in pay_item_cols_tab2:
             if c not in employee_display.columns:
                 employee_display[c] = 0.0
         employee_display = employee_display[fixed_cols_existing + pay_item_cols_tab2]
         number_cols_tab2 = employee_display.select_dtypes(include="number").columns.tolist()
         format_map_tab2 = {c: "{:,.2f}" for c in number_cols_tab2}
+        sort_col = pay_item_cols_tab2[0] if pay_item_cols_tab2 else (
+            "รหัสพนักงาน" if "รหัสพนักงาน" in employee_display.columns else employee_display.columns[0]
+        )
         st.dataframe(
-            employee_display.sort_values("เงินเดือน", ascending=False).style.format(format_map_tab2),
+            employee_display.sort_values(sort_col, ascending=False).style.format(format_map_tab2),
             column_order=list(employee_display.columns),
             use_container_width=False,
             hide_index=True,
