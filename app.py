@@ -8,7 +8,6 @@ import streamlit as st
 
 from src.dq_checks import run_dq_checks
 from src.export_excel import (
-    export_example_outputs,
     to_accounting_excel_bytes,
     to_mkt_excel_bytes,
 )
@@ -1060,6 +1059,10 @@ type_norm = mkt_output_df["Type"].astype(str).str.strip().str.lower()
 mkt_output_df = mkt_output_df[
     type_norm.isin(["f-fix 1", "f-inc"])
 ].copy()
+# Sort Allocate MKT output by Cost Center and re-number running No.
+mkt_output_df["Cost Center"] = normalize_cost_center(mkt_output_df["Cost Center"])
+mkt_output_df = mkt_output_df.sort_values("Cost Center", ascending=True).reset_index(drop=True)
+mkt_output_df["No."] = range(1, len(mkt_output_df) + 1)
 
 cc_type_map = (
     valid_payroll_with_mapping_f[["cost_center", "front_back"]]
@@ -1135,16 +1138,6 @@ st.sidebar.download_button(
     file_name=acc_output_filename,
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
-if st.sidebar.button("Export XLSX to output/"):
-    export_paths = export_example_outputs(
-        mkt_df=mkt_output_df,
-        accounting_df=accounting_output_df,
-        month_suffix=month_suffix,
-        period_text=period_text,
-        output_dir="output",
-    )
-    st.sidebar.success(f"Exported: {', '.join(export_paths.values())}")
-
 # Main tabs
 tab1, tab2, tab3 = st.tabs(
     ["Executive Summary", "Employee / Payroll", "Reconciliation"]
