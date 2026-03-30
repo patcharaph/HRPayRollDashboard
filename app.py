@@ -75,6 +75,11 @@ st.markdown(
     section[data-testid="stSidebar"] div {
         color: var(--brand-800) !important;
     }
+    section[data-testid="stSidebar"] [data-testid="stFileUploader"] label p,
+    section[data-testid="stSidebar"] [data-testid="stFileUploader"] label span {
+        font-weight: 800 !important;
+        color: var(--brand-900) !important;
+    }
     h1, h2, h3 {
         color: var(--brand-900);
     }
@@ -448,6 +453,10 @@ st.title("HR Payroll & Allocation Dashboard")
 st.caption("Executive Summary | Employee/Payroll | Allocation | Data Quality/Reconciliation")
 
 st.sidebar.header("Data Source")
+st.sidebar.warning(
+    "คำเตือน: อัปโหลดไฟล์ให้ถูกประเภทและถูกเดือน "
+    "(Payroll .xls / Allocation .xlsx) เพื่อป้องกันตัวเลขคลาดเคลื่อน"
+)
 payroll_upload = st.sidebar.file_uploader(
     "Upload Payroll (.xls)",
     type=["xls"],
@@ -458,11 +467,18 @@ allocation_upload = st.sidebar.file_uploader(
     type=["xlsx"],
     accept_multiple_files=False,
 )
+prev_payroll_upload = st.sidebar.file_uploader(
+    "Upload Previous Payroll (.xls, optional)",
+    type=["xls"],
+    accept_multiple_files=False,
+)
 payroll_password = st.sidebar.text_input("Payroll Password", value=PAYROLL_PASSWORD, type="password")
 month_key_input = st.sidebar.text_input("Month Key (YYYY-MM)", value=DEFAULT_MONTH_KEY)
+prev_month_key_input = st.sidebar.text_input("Previous Month Key (YYYY-MM)", value="2026-02")
 
 payroll_upload_bytes = payroll_upload.getvalue() if payroll_upload is not None else None
 allocation_upload_bytes = allocation_upload.getvalue() if allocation_upload is not None else None
+prev_payroll_upload_bytes = prev_payroll_upload.getvalue() if prev_payroll_upload is not None else None
 local_payroll_file_for_label = find_local_file(["*.xls", "*.xlsx"])
 payroll_file_label = (
     payroll_upload.name
@@ -788,11 +804,185 @@ recon_check_cc_set = pd.DataFrame(
     ]
 )
 
+recon_prev_salary = pd.DataFrame(
+    columns=["check_name", "month_key", "left_value", "right_value", "difference", "status"]
+)
+prev_month_salary_diff_detail = pd.DataFrame(
+    columns=[
+        "employee_id",
+        "employee_name",
+        "cost_center",
+        "department",
+        "current_salary",
+        "previous_salary",
+        "difference",
+        "change_type",
+    ]
+)
+if prev_payroll_upload_bytes is not None:
+    try:
+        prev_payroll_raw = load_payroll_xls_from_bytes(prev_payroll_upload_bytes, password=payroll_password)
+        prev_payroll_fact = transform_payroll_to_fact(
+            prev_payroll_raw,
+            month_key=prev_month_key_input,
+            source_file=prev_payroll_upload.name if prev_payroll_upload is not None else "previous_payroll.xls",
+        )
+        prev_payroll_mapped = apply_employee_mapping(prev_payroll_fact, employee_master)
+        prev_payroll_mapped["employee_id"] = normalize_employee_code(prev_payroll_mapped["employee_id"])
+        prev_payroll_mapped["cost_center"] = normalize_cost_center(prev_payroll_mapped["cost_center"])
+        if selected_cc:
+            prev_payroll_mapped = prev_payroll_mapped[prev_payroll_mapped["cost_center"].isin(selected_cc)]
+        if selected_dept:
+            prev_payroll_mapped = prev_payroll_mapped[prev_payroll_mapped["department"].isin(selected_dept)]
+        prev_valid = prev_payroll_mapped[is_valid_code(prev_payroll_mapped["employee_id"])].copy()
+        prev_valid_cost = prev_valid[
+            prev_valid["pay_item"].astype(str).map(is_cost_pay_item_name)
+        ].copy()
+
+        current_salary_mask = valid_payroll_cost_f["pay_item"].astype(str).str.contains(
+            r"salary|wage|basic|เงินเดือน",
+            case=False,
+            regex=True,
+            na=False,
+        )
+        prev_salary_mask = prev_valid_cost["pay_item"].astype(str).str.contains(
+            r"salary|wage|basic|เงินเดือน",
+            case=False,
+            regex=True,
+            na=False,
+        )
+        current_salary_total = float(valid_payroll_cost_f[current_salary_mask]["amount"].sum())
+        prev_salary_total = float(prev_valid_cost[prev_salary_mask]["amount"].sum())
+        if current_salary_total == 0.0:
+            current_salary_total = float(cc_summary_f["direct_payroll_cost"].sum()) if not cc_summary_f.empty else 0.0
+        if prev_salary_total == 0.0:
+            prev_salary_total = float(prev_valid_cost["amount"].sum()) if not prev_valid_cost.empty else 0.0
+
+        curr_salary_by_emp = (
+            valid_payroll_cost_f[current_salary_mask]
+            .groupby(["employee_id", "employee_name"], as_index=False)["amount"]
+            .sum()
+            .rename(columns={"amount": "current_salary"})
+        )
+        prev_salary_by_emp = (
+            prev_valid_cost[prev_salary_mask]
+            .groupby(["employee_id", "employee_name"], as_index=False)["amount"]
+            .sum()
+            .rename(columns={"amount": "previous_salary"})
+        )
+        curr_emp_info = (
+            valid_payroll_with_mapping_f[["employee_id", "cost_center", "department"]]
+            .drop_duplicates(subset=["employee_id"])
+            .rename(columns={"cost_center": "cost_center_curr", "department": "department_curr"})
+        )
+        prev_emp_info = (
+            prev_valid[["employee_id", "cost_center", "department"]]
+            .drop_duplicates(subset=["employee_id"])
+            .rename(columns={"cost_center": "cost_center_prev", "department": "department_prev"})
+        )
+        prev_month_salary_diff_detail = curr_salary_by_emp.merge(
+            prev_salary_by_emp,
+            on="employee_id",
+            how="outer",
+            suffixes=("_curr", "_prev"),
+        )
+        prev_month_salary_diff_detail = prev_month_salary_diff_detail.merge(
+            curr_emp_info,
+            on="employee_id",
+            how="left",
+        ).merge(
+            prev_emp_info,
+            on="employee_id",
+            how="left",
+        )
+        prev_month_salary_diff_detail["employee_name"] = (
+            prev_month_salary_diff_detail["employee_name_curr"]
+            .fillna(prev_month_salary_diff_detail["employee_name_prev"])
+            .fillna("")
+        )
+        prev_month_salary_diff_detail["cost_center"] = (
+            prev_month_salary_diff_detail["cost_center_curr"]
+            .fillna(prev_month_salary_diff_detail["cost_center_prev"])
+            .fillna("")
+        )
+        prev_month_salary_diff_detail["department"] = (
+            prev_month_salary_diff_detail["department_curr"]
+            .fillna(prev_month_salary_diff_detail["department_prev"])
+            .fillna("")
+        )
+        prev_month_salary_diff_detail = prev_month_salary_diff_detail.drop(
+            columns=[
+                "employee_name_curr",
+                "employee_name_prev",
+                "cost_center_curr",
+                "cost_center_prev",
+                "department_curr",
+                "department_prev",
+            ],
+            errors="ignore",
+        )
+        prev_month_salary_diff_detail["employee_id"] = normalize_employee_code(
+            prev_month_salary_diff_detail["employee_id"]
+        )
+        prev_month_salary_diff_detail["cost_center"] = normalize_cost_center(
+            prev_month_salary_diff_detail["cost_center"]
+        )
+        prev_month_salary_diff_detail["current_salary"] = pd.to_numeric(
+            prev_month_salary_diff_detail["current_salary"], errors="coerce"
+        ).fillna(0.0)
+        prev_month_salary_diff_detail["previous_salary"] = pd.to_numeric(
+            prev_month_salary_diff_detail["previous_salary"], errors="coerce"
+        ).fillna(0.0)
+        prev_month_salary_diff_detail["difference"] = (
+            prev_month_salary_diff_detail["current_salary"] - prev_month_salary_diff_detail["previous_salary"]
+        )
+        prev_month_salary_diff_detail["change_type"] = "changed"
+        prev_month_salary_diff_detail.loc[
+            (prev_month_salary_diff_detail["previous_salary"] == 0)
+            & (prev_month_salary_diff_detail["current_salary"] != 0),
+            "change_type",
+        ] = "new_in_current"
+        prev_month_salary_diff_detail.loc[
+            (prev_month_salary_diff_detail["current_salary"] == 0)
+            & (prev_month_salary_diff_detail["previous_salary"] != 0),
+            "change_type",
+        ] = "missing_in_current"
+        prev_month_salary_diff_detail = prev_month_salary_diff_detail[
+            prev_month_salary_diff_detail["difference"].abs() > 0.01
+        ].sort_values("difference", key=lambda s: s.abs(), ascending=False).reset_index(drop=True)
+
+        recon_prev_salary = pd.DataFrame(
+            [
+                {
+                    "check_name": "current_salary_total_vs_previous_month_salary",
+                    "month_key": selected_month,
+                    "left_value": current_salary_total,
+                    "right_value": prev_salary_total,
+                    "difference": current_salary_total - prev_salary_total,
+                    "status": "same" if abs(current_salary_total - prev_salary_total) <= 0.01 else "review",
+                }
+            ]
+        )
+    except Exception as e:
+        recon_prev_salary = pd.DataFrame(
+            [
+                {
+                    "check_name": "previous_month_file_parse_error",
+                    "month_key": selected_month,
+                    "left_value": 0.0,
+                    "right_value": 0.0,
+                    "difference": 0.0,
+                    "status": f"error: {e}",
+                }
+            ]
+        )
+
 recon_summary_vs_payroll = pd.concat(
     [
         recon_summary_vs_payroll,
         recon_check_employee_vs_cc,
         recon_check_cc_set,
+        recon_prev_salary,
     ],
     ignore_index=True,
 )
@@ -1101,6 +1291,8 @@ with tab3:
         "summary_total_vs_cost_center_sum": "ตรวจว่า Total Cost KPI เท่ากับผลรวมจาก Summary by Cost Center",
         "payroll_employee_total_vs_cost_center_total": "ตรวจยอดรวม Payroll เทียบกับยอดรวมตาม Cost Center",
         "cost_center_set_match": "ตรวจชุดรหัส Cost Center ระหว่าง Payroll กับ Allocation/Mapping",
+        "current_salary_total_vs_previous_month_salary": "Compare current month salary total with previous month salary total",
+        "previous_month_file_parse_error": "Cannot parse previous payroll file",
     }
     recon_display = recon_summary_vs_payroll.copy()
     recon_display["description"] = recon_display["check_name"].map(recon_desc).fillna("")
@@ -1136,4 +1328,57 @@ with tab3:
     ]
     st.dataframe(recon_display, use_container_width=True, hide_index=True)
 
+    st.caption("พนักงานที่เงินเดือนต่างจากเดือนก่อนหน้า")
+    if prev_payroll_upload_bytes is None:
+        st.info("Upload Previous Payroll (.xls) to see employee-level differences.")
+    elif prev_month_salary_diff_detail.empty:
+        st.success("No employee-level salary differences found.")
+    else:
+        diff_count = int(len(prev_month_salary_diff_detail))
+        diff_net = float(prev_month_salary_diff_detail["difference"].sum())
+        m1, m2 = st.columns(2)
+        m1.metric("Employees Changed", f"{diff_count:,}")
+        m2.metric("Net Difference", f"{diff_net:,.2f}")
 
+        prev_diff_display = prev_month_salary_diff_detail[
+            [
+                "employee_id",
+                "employee_name",
+                "cost_center",
+                "department",
+                "current_salary",
+                "previous_salary",
+                "difference",
+                "change_type",
+            ]
+        ].rename(
+            columns={
+                "employee_id": "รหัสพนักงาน",
+                "employee_name": "ชื่อพนักงาน",
+                "cost_center": "Cost Center",
+                "department": "แผนก",
+                "current_salary": "เงินเดือนเดือนปัจจุบัน",
+                "previous_salary": "เงินเดือนเดือนก่อน",
+                "difference": "ผลต่าง",
+                "change_type": "สถานะ",
+            }
+        )
+        st.download_button(
+            "Download Salary Difference CSV",
+            data=prev_diff_display.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
+            file_name=f"salary_diff_{selected_month}_vs_{prev_month_key_input}.csv",
+            mime="text/csv",
+        )
+
+        st.dataframe(
+            prev_diff_display.style.format(
+                {
+                    "เงินเดือนเดือนปัจจุบัน": "{:,.2f}",
+                    "เงินเดือนเดือนก่อน": "{:,.2f}",
+                    "ผลต่าง": "{:,.2f}",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+            height=36 * (10 + 1),
+        )
