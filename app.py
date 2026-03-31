@@ -54,6 +54,7 @@ st.markdown(
 
     .stApp {
         font-family: 'Manrope', sans-serif;
+        font-size: 14px;
         background:
           radial-gradient(1200px 520px at 102% -8%, rgba(47, 111, 235, 0.16), transparent 58%),
           radial-gradient(900px 420px at -2% 2%, rgba(29, 94, 216, 0.10), transparent 55%),
@@ -88,6 +89,7 @@ st.markdown(
     h1 {
         font-family: 'Plus Jakarta Sans', sans-serif;
         font-weight: 800;
+        font-size: 2.8rem;
         letter-spacing: -0.4px;
     }
     .block-container {
@@ -338,6 +340,45 @@ def run_pipeline(
             mapping_sheet_name = mapping_sheet_hint
 
         employee_master = transform_employee_master(mapping_raw, month_key=month_key)
+
+        # Enrich mapping by other *-69 sheets for ids missing in selected month sheet.
+        all_master_frames = []
+        for sheet_name in candidate_names:
+            try:
+                cm = transform_employee_master(allocate_sheets[sheet_name], month_key=month_key)
+                cm["_source_sheet"] = str(sheet_name)
+                all_master_frames.append(cm)
+            except Exception:
+                continue
+        if all_master_frames:
+            all_master = pd.concat(all_master_frames, ignore_index=True)
+            all_master["employee_id"] = _norm_id(all_master["employee_id"])
+            all_master["employee_name"] = all_master["employee_name"].astype(str).fillna("").str.strip()
+            all_master["department"] = all_master["department"].astype(str).fillna("").str.strip()
+            all_master["cost_center"] = all_master["cost_center"].astype(str).fillna("").str.strip()
+            all_master["employee_type"] = all_master["employee_type"].astype(str).fillna("").str.strip()
+            all_master["front_back"] = all_master["front_back"].astype(str).fillna("").str.strip()
+            all_master = all_master[all_master["employee_id"] != ""].copy()
+
+            all_master["_score"] = (
+                (all_master["employee_name"] != "").astype(int)
+                + (all_master["department"] != "").astype(int)
+                + (all_master["cost_center"] != "").astype(int)
+                + (all_master["employee_type"] != "").astype(int)
+                + (all_master["front_back"] != "").astype(int)
+            )
+            all_master["_prefer_sheet"] = (all_master["_source_sheet"] == str(mapping_sheet_name)).astype(int)
+            all_master = (
+                all_master.sort_values(
+                    ["employee_id", "_score", "_prefer_sheet"],
+                    ascending=[True, False, False],
+                )
+                .drop_duplicates(subset=["employee_id"], keep="first")
+                .drop(columns=["_score", "_prefer_sheet", "_source_sheet"])
+                .reset_index(drop=True)
+            )
+            employee_master = all_master
+
         allocation_mapping_total_cost = extract_total_cost_from_mapping_sheet(mapping_raw)
         allocation_fact = transform_allocation_fact(
             allocate_sheets,
