@@ -29,6 +29,10 @@ def _clean_text(value: object) -> str:
 
 def _as_string_id(series: pd.Series) -> pd.Series:
     out = series.astype(str).str.strip()
+    out = out.str.replace("\u00A0", "", regex=False)  # non-breaking space
+    out = out.str.replace("\u200b", "", regex=False)  # zero-width space
+    out = out.str.replace(r"^'+", "", regex=True)     # leading apostrophe from Excel text cells
+    out = out.str.replace(r"\s+", "", regex=True)     # remove embedded spaces in id
     out = out.str.replace(r"\.0+$", "", regex=True)
     out = out.replace(
         {
@@ -163,7 +167,23 @@ def transform_employee_master(mapping_raw: pd.DataFrame, month_key: str = "2026-
     master["cost_center"] = _as_string_id(master["cost_center"]).astype("string")
     master["employee_type"] = master["employee_type"].astype(str).str.strip()
     master["front_back"] = master["front_back"].astype(str).str.strip()
-    master = master[master["employee_id"] != ""].drop_duplicates(subset=["employee_id"]).reset_index(drop=True)
+
+    master = master[master["employee_id"] != ""].copy()
+
+    # If same employee_id appears multiple rows, keep the row with the most complete mapping fields.
+    completeness_cols = ["employee_name", "department", "cost_center", "employee_type", "front_back"]
+    for c in completeness_cols:
+        master[c] = master[c].fillna("").astype(str).str.strip()
+    master["_completeness_score"] = master[completeness_cols].apply(
+        lambda r: sum(1 for v in r.tolist() if v not in ["", "nan", "None", "<NA>"]),
+        axis=1,
+    )
+    master = (
+        master.sort_values(["employee_id", "_completeness_score"], ascending=[True, False])
+        .drop_duplicates(subset=["employee_id"], keep="first")
+        .drop(columns=["_completeness_score"])
+        .reset_index(drop=True)
+    )
     return master
 
 

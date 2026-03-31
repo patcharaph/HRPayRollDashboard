@@ -4,29 +4,62 @@ import numpy as np
 import pandas as pd
 
 
+def _normalize_id(series: pd.Series) -> pd.Series:
+    out = series.astype(str).str.strip()
+    out = out.str.replace("\u00A0", "", regex=False)  # non-breaking space
+    out = out.str.replace("\u200b", "", regex=False)  # zero-width space
+    out = out.str.replace(r"^'+", "", regex=True)     # leading apostrophe from Excel text cells
+    out = out.str.replace(r"\s+", "", regex=True)     # remove embedded spaces in id
+    out = out.str.replace(r"\.0+$", "", regex=True)
+    return out
+
+
+def _canonical_numeric_id(series: pd.Series) -> pd.Series:
+    """
+    Canonical form for numeric employee ids:
+    - keep non-numeric ids as-is
+    - numeric ids drop leading zeros (e.g. 050346 -> 50346)
+    """
+    s = _normalize_id(series)
+    numeric_mask = s.str.match(r"^\d+$", na=False)
+    s.loc[numeric_mask] = s.loc[numeric_mask].str.lstrip("0")
+    s.loc[numeric_mask & (s == "")] = "0"
+    return s
+
+
 def apply_employee_mapping(payroll_fact: pd.DataFrame, employee_master: pd.DataFrame) -> pd.DataFrame:
     payroll = payroll_fact.copy()
     master = employee_master.copy()
-    payroll["employee_id"] = payroll["employee_id"].astype(str).str.strip().str.replace(r"\.0+$", "", regex=True)
-    master["employee_id"] = master["employee_id"].astype(str).str.strip().str.replace(r"\.0+$", "", regex=True)
+    payroll["employee_id"] = _normalize_id(payroll["employee_id"])
+    master["employee_id"] = _normalize_id(master["employee_id"])
+    payroll["employee_id_key"] = _canonical_numeric_id(payroll["employee_id"])
+    master["employee_id_key"] = _canonical_numeric_id(master["employee_id"])
     master["cost_center"] = master["cost_center"].astype(str).str.strip().str.replace(r"\.0+$", "", regex=True)
-    return payroll.merge(
+    mapped = payroll.merge(
         master[
-            ["employee_id", "employee_name", "department", "cost_center", "employee_type", "front_back"]
+            ["employee_id_key", "employee_name", "department", "cost_center", "employee_type", "front_back"]
         ],
-        on="employee_id",
+        on="employee_id_key",
         how="left",
         suffixes=("", "_master"),
     )
+    return mapped.drop(columns=["employee_id_key"], errors="ignore")
 
 
 def build_employee_cost_summary(
     payroll_with_mapping: pd.DataFrame,
     allocation_fact: pd.DataFrame,
 ) -> pd.DataFrame:
+    base_input = payroll_with_mapping.copy()
+    # Keep unmapped employees in summary instead of dropping them in groupby.
+    base_input["department"] = base_input["department"].fillna("Unmapped")
+    base_input["cost_center"] = base_input["cost_center"].fillna("Unmapped")
+
     direct = (
-        payroll_with_mapping.groupby(
-            ["month_key", "employee_id", "employee_name", "department", "cost_center"], as_index=False
+        base_input.groupby(
+            ["month_key", "employee_id", "employee_name", "department", "cost_center"],
+            as_index=False,
+            dropna=False,
         )["amount"]
         .sum()
         .rename(columns={"amount": "direct_payroll_cost"})

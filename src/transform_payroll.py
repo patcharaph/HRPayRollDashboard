@@ -27,6 +27,10 @@ def _as_string_id(series: pd.Series) -> pd.Series:
     Normalize id-like values to string and remove trailing '.0' from Excel numeric parsing.
     """
     out = series.astype(str).str.strip()
+    out = out.str.replace("\u00A0", "", regex=False)  # non-breaking space
+    out = out.str.replace("\u200b", "", regex=False)  # zero-width space
+    out = out.str.replace(r"^'+", "", regex=True)     # leading apostrophe from Excel text cells
+    out = out.str.replace(r"\s+", "", regex=True)     # remove embedded spaces in id
     out = out.str.replace(r"\.0+$", "", regex=True)
     out = out.replace(
         {

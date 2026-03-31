@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import pandas as pd
 import plotly.express as px
@@ -77,6 +78,8 @@ st.markdown(
     section[data-testid="stSidebar"] [data-testid="stFileUploader"] label p,
     section[data-testid="stSidebar"] [data-testid="stFileUploader"] label span {
         font-weight: 800 !important;
+        font-size: 1.06rem !important;
+        line-height: 1.35 !important;
         color: var(--brand-900) !important;
     }
     h1, h2, h3 {
@@ -167,6 +170,19 @@ st.markdown(
     .stCaption {
         color: var(--ink-600);
     }
+    /* Uploaded file row style (the exact row under each uploader) */
+    section[data-testid="stSidebar"] [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] {
+        background: #dcfce7 !important;
+        border: 1px solid #86efac !important;
+        border-radius: 10px !important;
+        padding: 6px 8px !important;
+        color: #166534 !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"]::before {
+        content: "✅ ";
+        font-weight: 800;
+        color: #166534 !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -185,6 +201,34 @@ def find_local_file(patterns: list[str]) -> Path | None:
         if files:
             return files[0]
     return None
+
+
+def infer_month_key_from_filename(file_name: str | None) -> str | None:
+    """
+    Examples:
+    - '...0326...' -> 2026-03
+    - '...03 26...' -> 2026-03
+    - '...03-26...' -> 2026-03
+    """
+    if not file_name:
+        return None
+    name = str(file_name)
+    candidates = []
+    candidates.extend(re.findall(r"(?<!\d)(0[1-9]|1[0-2])[\s\-_]?(\d{2})(?!\d)", name))
+    candidates.extend(re.findall(r"(?<!\d)(0[1-9]|1[0-2])(\d{2})(?!\d)", name))
+    for mm, yy in candidates:
+        month = int(mm)
+        year = 2000 + int(yy)
+        return f"{year:04d}-{month:02d}"
+    return None
+
+
+def previous_month_key(month_key: str) -> str:
+    try:
+        d = pd.to_datetime(f"{month_key}-01") - pd.offsets.MonthBegin(1)
+        return d.strftime("%Y-%m")
+    except Exception:
+        return "2026-02"
 
 
 @st.cache_data(show_spinner=True)
@@ -232,8 +276,16 @@ def run_pipeline(
     else:
         allocate_sheets = load_allocation_workbook(local_allocate_file)
 
+    # Dynamic mapping sheet hint by month, e.g. 2026-02 -> 2-69, 2026-03 -> 3-69
+    month_num_hint = "3"
     try:
-        mapping_raw = find_mapping_sheet(allocate_sheets, mapping_sheet_hint="3-69")
+        month_num_hint = str(int(str(month_key).split("-")[1]))
+    except Exception:
+        month_num_hint = "3"
+    mapping_sheet_hint = f"{month_num_hint}-69"
+
+    try:
+        mapping_raw = find_mapping_sheet(allocate_sheets, mapping_sheet_hint=mapping_sheet_hint)
 
         payroll_fact = transform_payroll_to_fact(
             payroll_raw,
@@ -245,7 +297,7 @@ def run_pipeline(
         allocation_fact = transform_allocation_fact(
             allocate_sheets,
             month_key=month_key,
-            mapping_sheet_hint="3-69",
+            mapping_sheet_hint=mapping_sheet_hint,
         )
     except Exception as e:
         return {"error": f"Data transform failed: {e}"}
@@ -452,6 +504,23 @@ st.title("HR Payroll & Allocation Dashboard")
 st.caption("Executive Summary | Employee/Payroll | Allocation | Data Quality/Reconciliation")
 
 st.sidebar.header("Data Source")
+if "uploader_nonce" not in st.session_state:
+    st.session_state["uploader_nonce"] = 0
+uploader_nonce = st.session_state["uploader_nonce"]
+
+if st.sidebar.button("Clear / Start Over"):
+    st.cache_data.clear()
+    st.session_state["uploader_nonce"] = st.session_state.get("uploader_nonce", 0) + 1
+    for k in list(st.session_state.keys()):
+        if k.startswith("payroll_upload_file_") or k.startswith("allocation_upload_file_") or k.startswith(
+            "prev_payroll_upload_file_"
+        ):
+            del st.session_state[k]
+    for k in ["payroll_password_input", "month_key_input", "prev_month_key_input", "filter_month", "filter_cost_center", "filter_department"]:
+        if k in st.session_state:
+            del st.session_state[k]
+    st.rerun()
+
 st.sidebar.warning(
     "คำเตือน: อัปโหลดไฟล์ให้ถูกประเภทและถูกเดือน "
     "(Payroll .xls / Allocation .xlsx) เพื่อป้องกันตัวเลขคลาดเคลื่อน"
@@ -460,30 +529,47 @@ payroll_upload = st.sidebar.file_uploader(
     "Upload Payroll (.xls)",
     type=["xls"],
     accept_multiple_files=False,
+    key=f"payroll_upload_file_{uploader_nonce}",
 )
 allocation_upload = st.sidebar.file_uploader(
     "Upload Allocation (.xlsx)",
     type=["xlsx"],
     accept_multiple_files=False,
+    key=f"allocation_upload_file_{uploader_nonce}",
 )
 prev_payroll_upload = st.sidebar.file_uploader(
     "Upload Previous Payroll (.xls, optional)",
     type=["xls"],
     accept_multiple_files=False,
+    key=f"prev_payroll_upload_file_{uploader_nonce}",
 )
-payroll_password = st.sidebar.text_input("Payroll Password", value=PAYROLL_PASSWORD, type="password")
-month_key_input = st.sidebar.text_input("Month Key (YYYY-MM)", value=DEFAULT_MONTH_KEY)
-prev_month_key_input = st.sidebar.text_input("Previous Month Key (YYYY-MM)", value="2026-02")
-
-payroll_upload_bytes = payroll_upload.getvalue() if payroll_upload is not None else None
-allocation_upload_bytes = allocation_upload.getvalue() if allocation_upload is not None else None
-prev_payroll_upload_bytes = prev_payroll_upload.getvalue() if prev_payroll_upload is not None else None
 local_payroll_file_for_label = find_local_file(["*.xls", "*.xlsx"])
 payroll_file_label = (
     payroll_upload.name
     if payroll_upload is not None
     else (local_payroll_file_for_label.name if local_payroll_file_for_label is not None else "payroll.xls")
 )
+auto_month_key = infer_month_key_from_filename(payroll_file_label) or DEFAULT_MONTH_KEY
+auto_prev_month_key = previous_month_key(auto_month_key)
+
+payroll_password = st.sidebar.text_input(
+    "Payroll Password",
+    value=PAYROLL_PASSWORD,
+    type="password",
+    key="payroll_password_input",
+)
+month_key_input = st.sidebar.text_input("Month Key (YYYY-MM)", value=auto_month_key, key="month_key_input")
+prev_month_key_input = st.sidebar.text_input(
+    "Previous Month Key (YYYY-MM)",
+    value=auto_prev_month_key,
+    key="prev_month_key_input",
+)
+if infer_month_key_from_filename(payroll_file_label):
+    st.sidebar.caption(f"Auto month from payroll file name: {auto_month_key}")
+
+payroll_upload_bytes = payroll_upload.getvalue() if payroll_upload is not None else None
+allocation_upload_bytes = allocation_upload.getvalue() if allocation_upload is not None else None
+prev_payroll_upload_bytes = prev_payroll_upload.getvalue() if prev_payroll_upload is not None else None
 
 data = run_pipeline(
     payroll_upload_bytes=payroll_upload_bytes,
@@ -514,7 +600,12 @@ employee_summary["cost_center"] = normalize_cost_center(employee_summary["cost_c
 # Sidebar Filters
 st.sidebar.header("Filters")
 months = sorted(payroll_fact["month_key"].astype(str).dropna().unique().tolist())
-selected_month = st.sidebar.selectbox("Month", months, index=0 if months else None)
+selected_month = st.sidebar.selectbox(
+    "Month",
+    months,
+    index=0 if months else None,
+    key="filter_month",
+)
 
 cost_centers = sorted(
     {
@@ -529,10 +620,10 @@ cost_centers = sorted(
         if cc.strip() != ""
     }
 )
-selected_cc = st.sidebar.multiselect("Cost Center", cost_centers, default=[])
+selected_cc = st.sidebar.multiselect("Cost Center", cost_centers, default=[], key="filter_cost_center")
 
 departments = sorted([d for d in employee_master["department"].astype(str).unique().tolist() if d.strip() != ""])
-selected_dept = st.sidebar.multiselect("Department", departments, default=[])
+selected_dept = st.sidebar.multiselect("Department", departments, default=[], key="filter_department")
 
 employee_summary_f = employee_summary[employee_summary["month_key"] == selected_month].copy()
 allocation_summary_f = allocation_summary[allocation_summary["month_key"] == selected_month].copy()
@@ -1278,6 +1369,44 @@ with tab2:
 
 with tab3:
     st.subheader("Reconciliation Checks")
+    # Debug summary for employee coverage and mapping status
+    payroll_month_all = payroll_fact[payroll_fact["month_key"] == selected_month].copy()
+    payroll_month_all["employee_id"] = normalize_employee_code(payroll_month_all["employee_id"])
+    payroll_month_all = payroll_month_all[is_valid_code(payroll_month_all["employee_id"])].copy()
+
+    payroll_after_filter = valid_payroll_with_mapping_f.copy()
+    payroll_after_filter["employee_id"] = normalize_employee_code(payroll_after_filter["employee_id"])
+    payroll_after_filter = payroll_after_filter[is_valid_code(payroll_after_filter["employee_id"])].copy()
+
+    mapped_after_filter = payroll_after_filter[
+        is_valid_cost_center(payroll_after_filter["cost_center"])
+    ].copy()
+    unmapped_after_filter = payroll_after_filter[
+        ~is_valid_cost_center(payroll_after_filter["cost_center"])
+    ].copy()
+
+    total_emp_month = int(payroll_month_all["employee_id"].nunique()) if not payroll_month_all.empty else 0
+    total_emp_after_filter = int(payroll_after_filter["employee_id"].nunique()) if not payroll_after_filter.empty else 0
+    mapped_emp_count = int(mapped_after_filter["employee_id"].nunique()) if not mapped_after_filter.empty else 0
+    unmapped_emp_count = int(unmapped_after_filter["employee_id"].nunique()) if not unmapped_after_filter.empty else 0
+
+    with st.expander("Debug: Employee Coverage", expanded=False):
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("Employees in payroll (month)", f"{total_emp_month:,}")
+        d2.metric("Employees after filters", f"{total_emp_after_filter:,}")
+        d3.metric("Mapped employees", f"{mapped_emp_count:,}")
+        d4.metric("Unmapped employees", f"{unmapped_emp_count:,}")
+
+        if unmapped_emp_count > 0:
+            unmapped_list = (
+                unmapped_after_filter[["employee_id", "employee_name"]]
+                .drop_duplicates()
+                .sort_values("employee_id")
+                .head(30)
+            )
+            st.caption("Sample unmapped employees (max 30):")
+            st.dataframe(unmapped_list, use_container_width=True, hide_index=True)
+
     recon_desc = {
         "duplicate_employee_name": "ตรวจชื่อพนักงานซ้ำในเดือนเดียวกัน",
         "duplicate_employee_code": "ตรวจรหัสพนักงานซ้ำในเดือนเดียวกัน",
@@ -1332,6 +1461,9 @@ with tab3:
         m1, m2 = st.columns(2)
         m1.metric("Employees Changed", f"{diff_count:,}")
         m2.metric("Net Difference", f"{diff_net:,.2f}")
+        st.caption(
+            f"Changed employees (unique): {prev_month_salary_diff_detail['employee_id'].astype(str).nunique():,}"
+        )
 
         prev_diff_display = prev_month_salary_diff_detail[
             [
