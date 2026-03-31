@@ -185,6 +185,12 @@ st.markdown(
         font-weight: 800;
         color: #166534 !important;
     }
+    .payroll-password-label {
+        color: #dc2626 !important;
+        font-weight: 800 !important;
+        margin: 6px 0 2px 0;
+        font-size: 1rem;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -603,7 +609,13 @@ if st.sidebar.button("Clear / Start Over"):
             "prev_payroll_upload_file_"
         ):
             del st.session_state[k]
-    for k in ["payroll_password_input", "filter_month", "filter_cost_center", "filter_department"]:
+    for k in [
+        "payroll_password_input",
+        "payroll_password_submitted",
+        "filter_month",
+        "filter_cost_center",
+        "filter_department",
+    ]:
         if k in st.session_state:
             del st.session_state[k]
     st.rerun()
@@ -639,12 +651,22 @@ payroll_file_label = (
 auto_month_key = infer_month_key_from_filename(payroll_file_label) or DEFAULT_MONTH_KEY
 auto_prev_month_key = previous_month_key(auto_month_key)
 
+st.sidebar.markdown("<div class='payroll-password-label'>Payroll Password</div>", unsafe_allow_html=True)
 payroll_password = st.sidebar.text_input(
     "Payroll Password",
     value=PAYROLL_PASSWORD,
     type="password",
     key="payroll_password_input",
+    label_visibility="collapsed",
 )
+if st.sidebar.button("Submit Password", key="payroll_password_submit_btn"):
+    if str(payroll_password).strip():
+        st.session_state["payroll_password_submitted"] = True
+    else:
+        st.session_state["payroll_password_submitted"] = False
+        st.sidebar.warning("Please enter password before submit.")
+if st.session_state.get("payroll_password_submitted", False):
+    st.sidebar.success("Password submitted")
 # Force month keys from payroll filename every run (non-editable).
 month_key_input = auto_month_key
 prev_month_key_input = auto_prev_month_key
@@ -1322,16 +1344,10 @@ tab1, tab2, tab3 = st.tabs(
 )
 
 with tab1:
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c3, c4 = st.columns(3)
     c1.metric("Total Cost", f"{kpi_total_cost:,.2f}")
-    c2.metric("Total Allocated Cost", f"{kpi_total_allocated:,.2f}")
     c3.metric("Employee Count", f"{kpi_employee_count:,}")
     c4.metric("Cost Center Count", f"{kpi_cost_center_count:,}")
-    st.caption(
-        f"Check: Total Cost KPI = {kpi_total_cost:,.2f} | "
-        f"Upload Allocation ({mapping_sheet_name}) Total = {allocation_mapping_total_cost:,.2f} | "
-        f"Difference = {(kpi_total_cost - allocation_mapping_total_cost):,.2f}"
-    )
 
     st.subheader("Summary by Cost Center")
     if cc_summary_f.empty:
