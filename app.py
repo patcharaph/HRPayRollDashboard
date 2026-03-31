@@ -603,7 +603,7 @@ if st.sidebar.button("Clear / Start Over"):
             "prev_payroll_upload_file_"
         ):
             del st.session_state[k]
-    for k in ["payroll_password_input", "month_key_input", "prev_month_key_input", "filter_month", "filter_cost_center", "filter_department"]:
+    for k in ["payroll_password_input", "filter_month", "filter_cost_center", "filter_department"]:
         if k in st.session_state:
             del st.session_state[k]
     st.rerun()
@@ -645,14 +645,13 @@ payroll_password = st.sidebar.text_input(
     type="password",
     key="payroll_password_input",
 )
-month_key_input = st.sidebar.text_input("Month Key (YYYY-MM)", value=auto_month_key, key="month_key_input")
-prev_month_key_input = st.sidebar.text_input(
-    "Previous Month Key (YYYY-MM)",
-    value=auto_prev_month_key,
-    key="prev_month_key_input",
-)
+# Force month keys from payroll filename every run (non-editable).
+month_key_input = auto_month_key
+prev_month_key_input = auto_prev_month_key
+st.sidebar.text_input("Month Key (Auto)", value=month_key_input, disabled=True)
+st.sidebar.text_input("Previous Month Key (Auto)", value=prev_month_key_input, disabled=True)
 if infer_month_key_from_filename(payroll_file_label):
-    st.sidebar.caption(f"Auto month from payroll file name: {auto_month_key}")
+    st.sidebar.caption(f"Auto month from payroll file name: {month_key_input}")
 
 payroll_upload_bytes = payroll_upload.getvalue() if payroll_upload is not None else None
 allocation_upload_bytes = allocation_upload.getvalue() if allocation_upload is not None else None
