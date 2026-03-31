@@ -78,7 +78,7 @@ st.markdown(
     section[data-testid="stSidebar"] [data-testid="stFileUploader"] label p,
     section[data-testid="stSidebar"] [data-testid="stFileUploader"] label span {
         font-weight: 800 !important;
-        font-size: 1.06rem !important;
+        font-size: 0.95rem !important;
         line-height: 1.35 !important;
         color: var(--brand-900) !important;
     }
@@ -92,7 +92,7 @@ st.markdown(
     }
     .block-container {
         padding-top: 1.25rem;
-        max-width: 1500px;
+        max-width: 1320px;
     }
     div[data-baseweb="tab-list"] {
         gap: 8px;
@@ -284,20 +284,65 @@ def run_pipeline(
         month_num_hint = "3"
     mapping_sheet_hint = f"{month_num_hint}-69"
 
-    try:
-        mapping_raw = find_mapping_sheet(allocate_sheets, mapping_sheet_hint=mapping_sheet_hint)
+    def _norm_id(series: pd.Series) -> pd.Series:
+        s = series.astype(str).str.strip()
+        s = s.str.replace("\u00A0", "", regex=False)
+        s = s.str.replace("\u200b", "", regex=False)
+        s = s.str.replace(r"^'+", "", regex=True)
+        s = s.str.replace(r"\s+", "", regex=True)
+        s = s.str.replace(r"\.0+$", "", regex=True)
+        numeric_mask = s.str.match(r"^\d+$", na=False)
+        s.loc[numeric_mask] = s.loc[numeric_mask].str.lstrip("0")
+        s.loc[numeric_mask & (s == "")] = "0"
+        return s
 
+    try:
         payroll_fact = transform_payroll_to_fact(
             payroll_raw,
             month_key=month_key,
             source_file=payroll_file_label,
         )
+
+        # Choose mapping sheet by actual id overlap with payroll to avoid wrong n-69 sheet.
+        payroll_ids = set(_norm_id(payroll_fact["employee_id"]).tolist())
+        mapping_sheet_name = mapping_sheet_hint
+        mapping_raw = None
+        best_overlap = -1
+        best_name = None
+
+        candidate_names = []
+        for sheet_name in allocate_sheets.keys():
+            if re.match(r"^\s*\d{1,2}\s*-\s*69\s*$", str(sheet_name)):
+                candidate_names.append(sheet_name)
+        if mapping_sheet_hint in allocate_sheets:
+            candidate_names = [mapping_sheet_hint] + [n for n in candidate_names if n != mapping_sheet_hint]
+        if not candidate_names:
+            candidate_names = list(allocate_sheets.keys())
+
+        for sheet_name in candidate_names:
+            try:
+                candidate_master = transform_employee_master(allocate_sheets[sheet_name], month_key=month_key)
+                candidate_ids = set(_norm_id(candidate_master["employee_id"]).tolist())
+                overlap = len(payroll_ids.intersection(candidate_ids))
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_name = sheet_name
+            except Exception:
+                continue
+
+        if best_name is not None and best_overlap >= 1:
+            mapping_sheet_name = str(best_name)
+            mapping_raw = allocate_sheets[best_name].copy()
+        else:
+            mapping_raw = find_mapping_sheet(allocate_sheets, mapping_sheet_hint=mapping_sheet_hint)
+            mapping_sheet_name = mapping_sheet_hint
+
         employee_master = transform_employee_master(mapping_raw, month_key=month_key)
         allocation_mapping_total_cost = extract_total_cost_from_mapping_sheet(mapping_raw)
         allocation_fact = transform_allocation_fact(
             allocate_sheets,
             month_key=month_key,
-            mapping_sheet_hint=mapping_sheet_hint,
+            mapping_sheet_hint=mapping_sheet_name,
         )
     except Exception as e:
         return {"error": f"Data transform failed: {e}"}
@@ -318,6 +363,7 @@ def run_pipeline(
         "dq_issues": dq_issues,
         "recon_table": recon_table,
         "allocation_mapping_total_cost": allocation_mapping_total_cost,
+        "mapping_sheet_name": mapping_sheet_name,
     }
 
 
@@ -591,6 +637,7 @@ allocation_summary = data["allocation_summary"]
 dq_issues = data["dq_issues"]
 recon_table = data["recon_table"]
 allocation_mapping_total_cost = data["allocation_mapping_total_cost"]
+mapping_sheet_name = data.get("mapping_sheet_name", "3-69")
 
 employee_master["cost_center"] = normalize_cost_center(employee_master["cost_center"])
 allocation_fact["cost_center"] = normalize_cost_center(allocation_fact["cost_center"])
@@ -1242,7 +1289,7 @@ with tab1:
     c4.metric("Cost Center Count", f"{kpi_cost_center_count:,}")
     st.caption(
         f"Check: Total Cost KPI = {kpi_total_cost:,.2f} | "
-        f"Upload Allocation (3-69) Total = {allocation_mapping_total_cost:,.2f} | "
+        f"Upload Allocation ({mapping_sheet_name}) Total = {allocation_mapping_total_cost:,.2f} | "
         f"Difference = {(kpi_total_cost - allocation_mapping_total_cost):,.2f}"
     )
 
