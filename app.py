@@ -231,6 +231,30 @@ def infer_month_key_from_filename(file_name: str | None) -> str | None:
     return None
 
 
+def validate_uploaded_filename(upload_kind: str, file_name: str) -> str | None:
+    name = str(file_name or "").strip()
+    lower_name = name.lower()
+    label = "Payroll" if upload_kind == "payroll" else "Previous Payroll"
+
+    if upload_kind in {"payroll", "prev_payroll"}:
+        # Payroll file name must include MMYY token such as 0326 or 03-26.
+        if infer_month_key_from_filename(name) is None:
+            return (
+                f"Invalid {label} file name: '{name}'. "
+                "Expected month token MMYY in the name (example: 0326)."
+            )
+
+    if upload_kind == "allocation":
+        # Allocation naming convention: include allocat* and 4-digit year.
+        if "allocat" not in lower_name or re.search(r"(?<!\d)20\d{2}(?!\d)", name) is None:
+            return (
+                f"Invalid allocation file name: '{name}'. "
+                "Expected name to contain 'Allocation/Allocate' and year YYYY (example: Allocation Cost 2026.xlsx)."
+            )
+
+    return None
+
+
 def previous_month_key(month_key: str) -> str:
     try:
         d = pd.to_datetime(f"{month_key}-01") - pd.offsets.MonthBegin(1)
@@ -593,6 +617,24 @@ def month_key_to_suffix(month_key: str) -> str:
         return "03 26"
 
 
+def count_csv_tokens(value: object) -> int:
+    if value is None:
+        return 0
+    try:
+        if pd.isna(value):
+            return 0
+    except Exception:
+        pass
+
+    if isinstance(value, (list, tuple, set)):
+        return len([v for v in value if str(v).strip() != ""])
+
+    text = str(value).strip()
+    if text in {"", "<NA>", "nan", "None"}:
+        return 0
+    return len([v for v in text.split(",") if v.strip() != ""])
+
+
 st.title("HR Payroll & Allocation Dashboard")
 st.caption("Executive Summary | Employee/Payroll | Allocation | Data Quality/Reconciliation")
 
@@ -642,6 +684,27 @@ prev_payroll_upload = st.sidebar.file_uploader(
     accept_multiple_files=False,
     key=f"prev_payroll_upload_file_{uploader_nonce}",
 )
+
+upload_name_errors: list[str] = []
+if payroll_upload is not None:
+    payroll_name_error = validate_uploaded_filename("payroll", payroll_upload.name)
+    if payroll_name_error:
+        upload_name_errors.append(payroll_name_error)
+if allocation_upload is not None:
+    allocation_name_error = validate_uploaded_filename("allocation", allocation_upload.name)
+    if allocation_name_error:
+        upload_name_errors.append(allocation_name_error)
+if prev_payroll_upload is not None:
+    prev_payroll_name_error = validate_uploaded_filename("prev_payroll", prev_payroll_upload.name)
+    if prev_payroll_name_error:
+        upload_name_errors.append(prev_payroll_name_error)
+
+if upload_name_errors:
+    for msg in upload_name_errors:
+        st.sidebar.error(msg)
+    st.error("Invalid uploaded file name format. Please rename file(s) and upload again.")
+    st.stop()
+
 local_payroll_file_for_label = find_local_file(["*.xls", "*.xlsx"])
 payroll_file_label = (
     payroll_upload.name
@@ -1521,12 +1584,8 @@ with tab3:
     }
     recon_display = recon_summary_vs_payroll.copy()
     recon_display["description"] = recon_display["check_name"].map(recon_desc).fillna("")
-    recon_display["missing_count"] = recon_display["missing_in_alloc_map"].astype(str).apply(
-        lambda x: 0 if x.strip() == "" else len([v for v in x.split(",") if v.strip() != ""])
-    )
-    recon_display["extra_count"] = recon_display["extra_in_alloc_map"].astype(str).apply(
-        lambda x: 0 if x.strip() == "" else len([v for v in x.split(",") if v.strip() != ""])
-    )
+    recon_display["missing_count"] = recon_display["missing_in_alloc_map"].apply(count_csv_tokens)
+    recon_display["extra_count"] = recon_display["extra_in_alloc_map"].apply(count_csv_tokens)
     recon_display = recon_display.rename(
         columns={
             "check_name": "check",
