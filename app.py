@@ -1008,7 +1008,12 @@ summary_total_from_rows = (
     else float(cc_summary_f["direct_payroll_cost"].sum()) if not cc_summary_f.empty else 0.0
 )
 
-employee_total_from_payroll = float(valid_payroll_cost_f["amount"].sum()) if not valid_payroll_cost_f.empty else 0.0
+valid_payroll_cost_with_emp_f = valid_payroll_cost_f[
+    is_valid_code(valid_payroll_cost_f["employee_id"])
+].copy()
+employee_total_from_payroll = (
+    float(valid_payroll_cost_with_emp_f["amount"].sum()) if not valid_payroll_cost_with_emp_f.empty else 0.0
+)
 cost_center_total_from_summary = float(summary_total_from_rows)
 recon_check_employee_vs_cc = pd.DataFrame(
     [
@@ -1100,34 +1105,44 @@ if prev_payroll_upload_bytes is not None:
         prev_valid_cost = prev_valid[
             prev_valid["pay_item"].astype(str).map(is_cost_pay_item_name)
         ].copy()
+        current_valid_cost_with_emp = valid_payroll_cost_f[
+            is_valid_code(valid_payroll_cost_f["employee_id"])
+        ].copy()
+        prev_valid_cost_with_emp = prev_valid_cost[
+            is_valid_code(prev_valid_cost["employee_id"])
+        ].copy()
 
-        current_salary_mask = valid_payroll_cost_f["pay_item"].astype(str).str.contains(
+        current_salary_mask = current_valid_cost_with_emp["pay_item"].astype(str).str.contains(
             r"salary|wage|basic|เงินเดือน",
             case=False,
             regex=True,
             na=False,
         )
-        prev_salary_mask = prev_valid_cost["pay_item"].astype(str).str.contains(
+        prev_salary_mask = prev_valid_cost_with_emp["pay_item"].astype(str).str.contains(
             r"salary|wage|basic|เงินเดือน",
             case=False,
             regex=True,
             na=False,
         )
-        current_salary_total = float(valid_payroll_cost_f[current_salary_mask]["amount"].sum())
-        prev_salary_total = float(prev_valid_cost[prev_salary_mask]["amount"].sum())
+        current_salary_total = float(current_valid_cost_with_emp[current_salary_mask]["amount"].sum())
+        prev_salary_total = float(prev_valid_cost_with_emp[prev_salary_mask]["amount"].sum())
         if current_salary_total == 0.0:
-            current_salary_total = float(cc_summary_f["direct_payroll_cost"].sum()) if not cc_summary_f.empty else 0.0
+            current_salary_total = (
+                float(current_valid_cost_with_emp["amount"].sum()) if not current_valid_cost_with_emp.empty else 0.0
+            )
         if prev_salary_total == 0.0:
-            prev_salary_total = float(prev_valid_cost["amount"].sum()) if not prev_valid_cost.empty else 0.0
+            prev_salary_total = (
+                float(prev_valid_cost_with_emp["amount"].sum()) if not prev_valid_cost_with_emp.empty else 0.0
+            )
 
         curr_salary_by_emp = (
-            valid_payroll_cost_f[current_salary_mask]
+            current_valid_cost_with_emp[current_salary_mask]
             .groupby(["employee_id", "employee_name"], as_index=False)["amount"]
             .sum()
             .rename(columns={"amount": "current_salary"})
         )
         prev_salary_by_emp = (
-            prev_valid_cost[prev_salary_mask]
+            prev_valid_cost_with_emp[prev_salary_mask]
             .groupby(["employee_id", "employee_name"], as_index=False)["amount"]
             .sum()
             .rename(columns={"amount": "previous_salary"})
