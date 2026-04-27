@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import sys
 
 import pandas as pd
 import plotly.express as px
@@ -639,6 +640,9 @@ st.title("HR Payroll & Allocation Dashboard")
 st.caption("Executive Summary | Employee/Payroll | Allocation | Data Quality/Reconciliation")
 
 st.sidebar.header("Data Source")
+st.sidebar.caption(
+    f"Runtime: Python {sys.version.split()[0]} | Streamlit {st.__version__} | Pandas {pd.__version__}"
+)
 if "uploader_nonce" not in st.session_state:
     st.session_state["uploader_nonce"] = 0
 uploader_nonce = st.session_state["uploader_nonce"]
